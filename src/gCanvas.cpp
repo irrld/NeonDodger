@@ -43,6 +43,11 @@ static const float MUTE_TOP = 54.0f;
 // fingers are wider than the icon
 static const float MUTE_TOUCH_PAD = 14.0f;
 
+// A bullet's speed and how long it lives, so the auto aim can work out whether
+// it could reach a target at all before deciding to lock onto it.
+static const float BULLET_SPEED = 750.0f;
+static const float BULLET_LIFE = 1.2f;
+
 // virtual joystick, in world units
 static const float JOY_RADIUS = 100.0f;
 static const float JOY_KNOB = 30.0f;
@@ -110,6 +115,36 @@ void gCanvas::fitToPage() {
 bool gCanvas::isOnScreen(const glm::vec2& p) {
 	return p.x > -20.0f && p.x < getWidth() + 20.0f &&
 	       p.y > -20.0f && p.y < getHeight() + 20.0f;
+}
+
+// How long a bullet fired now would take to meet an enemy, or -1 when it cannot
+// reach it at all before it expires. Solving it rather than aiming at where the
+// enemy currently is matters for the drifters: they cross at up to 280 units a
+// second, so by the time a bullet arrives they are most of a screen away from
+// where they were aimed at.
+float gCanvas::interceptTime(const Enemy& e) const {
+	glm::vec2 d = e.pos - playerpos;
+	float a = glm::dot(e.vel, e.vel) - BULLET_SPEED * BULLET_SPEED;
+	float b = 2.0f * glm::dot(d, e.vel);
+	float c = glm::dot(d, d);
+
+	float t;
+	if (std::abs(a) < 0.001f) {
+		// target moving at exactly bullet speed, the quadratic degenerates
+		if (std::abs(b) < 0.000001f) return -1.0f;
+		t = -c / b;
+	} else {
+		float disc = b * b - 4.0f * a * c;
+		if (disc < 0.0f) return -1.0f;
+		float root = std::sqrt(disc);
+		float t1 = (-b + root) / (2.0f * a);
+		float t2 = (-b - root) / (2.0f * a);
+		if (t1 < 0.0f) t1 = BULLET_LIFE * 10.0f;
+		if (t2 < 0.0f) t2 = BULLET_LIFE * 10.0f;
+		t = std::min(t1, t2);
+	}
+	if (t <= 0.0f || t > BULLET_LIFE) return -1.0f;
+	return t;
 }
 
 bool gCanvas::isOnMuteButton(float x, float y) {
@@ -270,28 +305,38 @@ void gCanvas::updateShooting(float dt) {
 	// otherwise the shots flick between enemies on a crowded field. A mouse
 	// click carries a direction of its own and aims at the cursor instead.
 	if (touchmode || firekey) {
+		// The lock is kept while the bullet can still catch it, and picked by
+		// soonest intercept rather than nearest. Nearest used to hand the lock
+		// to whatever drifter happened to be crossing close by, which is the one
+		// thing on the field a bullet often cannot reach in time.
 		const Enemy* target = nullptr;
+		float targettime = -1.0f;
 		for (const Enemy& e : enemies) {
-			if (e.id == targetid && isOnScreen(e.pos)) {
+			if (e.id != targetid || !isOnScreen(e.pos)) continue;
+			float t = interceptTime(e);
+			if (t > 0.0f) {
 				target = &e;
-				break;
+				targettime = t;
 			}
+			break;
 		}
 		if (target == nullptr) {
-			float bestdist = 0.0f;
+			float besttime = 0.0f;
 			for (const Enemy& e : enemies) {
 				if (!isOnScreen(e.pos)) continue;
-				glm::vec2 d = e.pos - playerpos;
-				float dist = d.x * d.x + d.y * d.y;
-				if (target == nullptr || dist < bestdist) {
-					bestdist = dist;
+				float t = interceptTime(e);
+				if (t < 0.0f) continue;
+				if (target == nullptr || t < besttime) {
+					besttime = t;
 					target = &e;
 				}
 			}
 			targetid = target != nullptr ? target->id : -1;
+			targettime = besttime;
 		}
 		if (target != nullptr) {
-			glm::vec2 d = target->pos - playerpos;
+			// lead it: aim where it will be when the bullet arrives
+			glm::vec2 d = target->pos + target->vel * targettime - playerpos;
 			float len = glm::length(d);
 			if (len > 1.0f) dir = d / len;
 		}
@@ -304,8 +349,8 @@ void gCanvas::updateShooting(float dt) {
 
 	Bullet b;
 	b.pos = playerpos + dir * 14.0f;
-	b.vel = dir * 750.0f;
-	b.life = 1.2f;
+	b.vel = dir * BULLET_SPEED;
+	b.life = BULLET_LIFE;
 	bullets.push_back(b);
 	spawnBurst(b.pos, 0, 2, 60.0f, 1.8f);
 	audio.play(gAudio::SFX_SHOOT);

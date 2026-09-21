@@ -72,6 +72,7 @@ private:
 	void fitToPage();
 	bool isOnScreen(const glm::vec2& p);
 	bool isOnMuteButton(float x, float y);
+	float interceptTime(const Enemy& e) const;
 	void startGame();
 	void killPlayer();
 	void confirmPressed();
